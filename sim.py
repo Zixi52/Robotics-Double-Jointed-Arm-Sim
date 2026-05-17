@@ -7,14 +7,21 @@ L1 = 2.0          # length of upper arm
 L2 = 1.5          # length of forearm
 alpha = 0.1       # IK step size
 lam = 0.01        # damping factor for damped least squares
-threshold = 0.05  # stop iterating when error is below this
+threshold = 0.05  # stop iterating when error is less than this
+
+# Physics params
+m1 = 1.0          # mass of upper arm (kg)
+m2 = 0.75         # mass of forearm (kg)
+g  = 9.81         # accel due to gravity
+kd = 0.85         # joint velocity damping coefficient (0-1, lower = more damping)
+dt = 0.03         # timestep (s), match animation interval
 
 # State
 theta = np.array([np.pi / 4, np.pi / 4]) # [theta1, theta2]
+theta_dot = np.array([0.0, 0.0]) # joint velocities
 target = None # set on mouse click
 
 # Kinematics
-
 def forward_kinematics(theta):
     # Return (base, elbow, end_effector) as 2D points
     t1, t2 = theta
@@ -39,40 +46,63 @@ def jacobian(theta):
     ])
     return J
 
-def ik_step(theta, target):
-    # One iteration of damped-least-squares Jacobian IK.
+# Compute torque from gravity with torque = J transpose dot F_g
+def gravity_torques(theta):
+    t1, t2 = theta
+    F_grav = np.array([0.0, -g]) # gravity down direction
 
+    # Link 1: center of mass is halfway along the upper arm
+    # Jacobian of the link-1 COM with respect to both joints
+    # joint 2 doesn't affect link 1's COM, so its column is zero
+    J1_com = np.array([
+        [-0.5 * L1 * np.sin(t1),  0.0],
+        [ 0.5 * L1 * np.cos(t1),  0.0]
+    ])
+    tau1 = J1_com.T @ (m1 * F_grav)
+
+    # Link 2: center of mass is halfway along the forearm
+    # Jacobian of the link-2 COM with respect to both joints
+    J2_com = np.array([
+        [-L1 * np.sin(t1) - 0.5 * L2 * np.sin(t1 + t2),  -0.5 * L2 * np.sin(t1 + t2)],
+        [ L1 * np.cos(t1) + 0.5 * L2 * np.cos(t1 + t2),   0.5 * L2 * np.cos(t1 + t2)]
+    ])
+    tau2 = J2_com.T @ (m2 * F_grav)
+
+    return tau1 + tau2 # total torque vector [tau_joint1, tau_joint2]
+
+def ik_step(theta, target):
+    # One iteration of damped-least-squares Jacobian IK to get target velocity
     # dtheta = J^T (J J^T + (λ^2)I)^-1 dot e
     _, _, end = forward_kinematics(theta)
     error = target - end
 
     if np.linalg.norm(error) < threshold:
-        return theta, True # reached target
+        return np.array([0.0, 0.0]), True # reached target
 
     J = jacobian(theta)
     JJT = J @ J.T
     damped = JJT + lam**2 * np.eye(2)
     delta = J.T @ np.linalg.inv(damped) @ error
 
-    return theta + alpha * delta, False
+    return alpha * delta, False
 
 # Drawing
 
 fig, ax = plt.subplots(figsize=(7, 7))
-ax.set_xlim(-(L1 + L2 + 0.5), L1 + L2 + 0.5)
-ax.set_ylim(-(L1 + L2 + 0.5), L1 + L2 + 0.5)
+ax.set_xlim(-(L1 + L2 + 1), L1 + L2 + 1)
+ax.set_ylim(-(L1 + L2 + 1), L1 + L2 + 1)
 ax.set_aspect('equal')
 ax.set_facecolor('#0f0f0f')
 fig.patch.set_facecolor('#0f0f0f')
 ax.grid(True, color='#333333', linewidth=0.5)
-ax.set_title('2D Robotic Arm  —  click to set target', color='white', fontsize=12)
+ax.set_title('2D Robotic Arm - click to set target', color='white', fontsize=12)
 ax.tick_params(colors='#666666')
 
 # Draw workspace boundaries (max and min reach circles)
 outer = plt.Circle((0, 0), L1 + L2, color='#333333',
-                        fill=False, linestyle='--', linewidth=0.8)
+                        fill=False, linestyle='--', linewidth=1)
 inner = plt.Circle((0, 0), L1 - L2, color='#333333',
-                        fill=False, linestyle='--', linewidth=0.8)
+                        fill=False, linestyle='--', linewidth=1)
 ax.add_patch(outer)
 ax.add_patch(inner)
 
@@ -115,8 +145,8 @@ def update_display(theta):
     err = np.linalg.norm(target - end) if target is not None else 0.0
 
     info_text.set_text(
-        f"θ₁ = {(np.degrees(theta[0])%360):6.1f}°\n"
-        f"θ₂ = {(np.degrees(theta[1])%360):6.1f}°\n"
+        f"θ₁ = {(np.degrees(theta[0]) % 360):6.1f}°\n"
+        f"θ₂ = {(np.degrees(theta[1]) % 360):6.1f}°\n"
         f"det(J) = {det:.3f}\n"
         f"error = {err:.3f}"
     )
@@ -124,11 +154,26 @@ def update_display(theta):
 # Animation loop
 
 def animate(_frame):
-    global theta, target
+    global theta, theta_dot, target
+
+    # 1. Gravity pulls the arm down every frame
+    tau_grav   = gravity_torques(theta)
+    theta_dot += tau_grav * dt
+
+    # 2. IK nudges theta_dot toward the target
     if target is not None:
-        theta, reached = ik_step(theta, target)
+        ik_vel, reached = ik_step(theta, target)
+        theta_dot += ik_vel
         if reached:
             target = None
+
+    # 3. Damping - reduces velocity
+    # lumped all factors like air resistance and motor friction that would exist in real life into one coefficient
+    theta_dot *= kd
+
+    # 4. Integrate velocity into position
+    theta += theta_dot * dt
+
     update_display(theta)
     return line_upper, line_fore, dot_base, dot_elbow, dot_end, dot_target, info_text
 
@@ -140,11 +185,13 @@ def on_click(event):
         return
     clicked = np.array([event.xdata, event.ydata])
     # Only set target if it's within the reachable workspace
-    valid_target = True if (np.linalg.norm(clicked) <= L1 + L2 and np.linalg.norm(clicked) >= L1 - L2) else False
+    # range goes beyond L1 + L2 and L1 - L2, look into this
+    valid_target = True if (np.linalg.norm(clicked) <= L1 + L2 + 0.05 and np.linalg.norm(clicked) >= L1 - L2 - 0.05) else False
     if valid_target:
         target = clicked
     else:
         print("Target outside workspace - click between the two circles.")
+    print(np.linalg.norm(clicked))
 
 fig.canvas.mpl_connect('button_press_event', on_click)
 
