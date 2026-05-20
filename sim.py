@@ -17,10 +17,10 @@ dt = 0.03         # timestep (s), match animation interval
 # PID gains: tune these to change arm behavior
 # Kp: stiffness; higher = faster response but more overshoot
 # Ki: integral; corrects persistent steady-state error (e.g. gravity sag)
-# Kd: derivative; dampens oscillation, like smart braking
-Kp = np.diag([150.0, 60.0])
-Ki = np.diag([5, 2.5])
-Kd = np.diag([10, 8])
+# Kd: derivative; dampens oscillation
+Kp = np.diag([175.0, 125.0])
+Ki = np.diag([12, 10])
+Kd = np.diag([20, 12])
 
 # State
 theta = np.array([np.pi / 4, np.pi / 4]) # [theta1, theta2]
@@ -78,6 +78,7 @@ def gravity_torques(theta):
     return tau1 + tau2   # total torque vector [tau_joint1, tau_joint2]
 
 # solve for joint angles using law of cosines, always using CW solution
+# fix to not always use CW solution, angle math
 def analytic_ik(target):
     x, y = target
     D = (x**2 + y**2 - L1**2 - L2**2) / (2 * L1 * L2)
@@ -91,10 +92,9 @@ def analytic_ik(target):
 def pid_step(theta, theta_dot, theta_target, integral_error):
     e = theta_target - theta    # proportional error
     integral_error = integral_error + e * dt    # accumulate integral
-    integral_error = np.clip(integral_error, -5.0, 5.0)    # anti-windup clamp
     e_dot = -theta_dot    # derivative of error
 
-    tau = Kp @ e  +  Ki @ integral_error  +  Kd @ e_dot
+    tau = Kp @ e + Ki @ integral_error + Kd @ e_dot
 
     return tau, integral_error
 
@@ -179,11 +179,9 @@ def animate(_frame):
     if theta_target is not None:
         _, _, end = forward_kinematics(theta)
         if np.linalg.norm(target - end) < threshold:
-            theta_target = None
             integral_error = np.array([0.0, 0.0])   # reset integrator on arrival
-        else:
-            tau_pid, integral_error = pid_step(theta, theta_dot, theta_target, integral_error)
-            theta_dot += tau_pid * dt
+        tau_pid, integral_error = pid_step(theta, theta_dot, theta_target, integral_error)
+        theta_dot += tau_pid * dt
 
     # 3. Damping, models friction and motor resistance
     theta_dot *= kd
