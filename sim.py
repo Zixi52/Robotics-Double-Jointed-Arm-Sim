@@ -18,8 +18,8 @@ dt = 0.03         # timestep (s), match animation interval
 # Kp: stiffness; higher = faster response but more overshoot
 # Ki: integral; corrects persistent steady-state error (e.g. gravity sag)
 # Kd: derivative; dampens oscillation
-Kp = np.diag([175.0, 125.0])
-Ki = np.diag([12, 10])
+Kp = np.diag([200.0, 150.0])
+Ki = np.diag([20, 20])
 Kd = np.diag([20, 12])
 
 # State
@@ -91,6 +91,7 @@ def analytic_ik(target):
 
 def pid_step(theta, theta_dot, theta_target, integral_error):
     e = theta_target - theta    # proportional error
+    e = np.arctan2(np.sin(e), np.cos(e)) # angle wrap [-pi, pi]
     integral_error = integral_error + e * dt    # accumulate integral
     e_dot = -theta_dot    # derivative of error
 
