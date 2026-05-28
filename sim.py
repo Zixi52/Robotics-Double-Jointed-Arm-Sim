@@ -19,9 +19,9 @@ dt_phys = 0.005   # timestep for integrators
 # Kp: stiffness; higher = faster response but more overshoot
 # Ki: integral; corrects persistent steady-state error (e.g. gravity sag)
 # Kd: derivative; dampens oscillation
-Kp = np.diag([180.0, 120.0])
-Ki = np.diag([8, 8])
-Kd = np.diag([45, 32])
+Kp = np.diag([350.0, 300.0])
+Ki = np.diag([30, 30])
+Kd = np.diag([50, 30])
 
 # State
 theta = np.array([np.pi / 4, np.pi / 4]) # [theta1, theta2]
@@ -29,7 +29,6 @@ theta_dot = np.array([0.0, 0.0])         # joint velocities
 integral_error = np.array([0.0, 0.0])    # accumulated error for I term
 theta_target = None                      # target joint angles (from IK)
 target = None                            # target end-effector pos (from click)
-theta_target_step = theta.copy()
 
 # Kinematics
 def forward_kinematics(theta):
@@ -78,6 +77,7 @@ def pid_step(theta, theta_dot, theta_target, integral_error):
     e = theta_target - theta    # proportional error
     e = np.arctan2(np.sin(e), np.cos(e)) # angle wrap [-pi, pi]
     integral_error = integral_error + e * dt_phys    # accumulate integral
+    integral_error = np.clip(integral_error, -2.0, 2.0)
     e_dot = -theta_dot    # derivative of error
 
     tau = Kp @ e + Ki @ integral_error + Kd @ e_dot
@@ -141,12 +141,12 @@ def update_display(theta, tau_pid):
         f"θ1 = {np.degrees(theta[0]):6.1f}°\n"
         f"θ2 = {np.degrees(theta[1]):6.1f}°\n"
         f"error = {err:.3f}\n"
-        f"tau = [{tau_pid[0]:.2f}, {tau_pid[1]:.2f}]"
+        f"tau_pid = [{tau_pid[0]:.2f}, {tau_pid[1]:.2f}]"
     )
 
 
 def animate(_frame):
-    global theta, theta_dot, theta_target, theta_target_step, target, integral_error
+    global theta, theta_dot, theta_target, target, integral_error
 
     tau_pid = np.array([0.0, 0.0])
 
@@ -162,30 +162,24 @@ def animate(_frame):
             if np.linalg.norm(dist) < threshold:
                 integral_error = np.array([0.0, 0.0])
 
-            theta_target_step += 0.1 * (theta_target - theta_target_step)
-
             tau_pid, integral_error = pid_step(
-                theta, theta_dot, theta_target_step, integral_error
+                theta, theta_dot, theta_target, integral_error
             )
-
-            gain = np.clip(dist / 0.08, 0.0, 1.0)
-            tau_pid *= gain
 
         M = inertia_matrix(theta)
         C = coriolis_centrifugal(theta, theta_dot)
         G = gravity_vector(theta)
 
-        tau_damp = -10.0 * theta_dot
+        tau_damp = -30.0 * theta_dot
 
         if theta_target is None:
             tau = tau_damp
         else:
             tau = tau_pid + tau_damp + G
-            tau = np.clip(tau, -100, 100)
 
         theta_ddot = np.linalg.solve(M, tau - C - G)
 
-        theta_ddot = np.clip(theta_ddot, -50, 50)
+        theta_ddot = np.clip(theta_ddot, -300, 300)
 
         theta_dot += theta_ddot * dt_phys
         theta_dot = np.clip(theta_dot, -15, 15)
