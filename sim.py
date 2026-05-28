@@ -11,7 +11,6 @@ threshold = 0.05  # stop PID when end-effector error is below this
 m1 = 1.0          # mass of upper arm (kg)
 m2 = 0.75         # mass of forearm (kg)
 g  = 9.81         # accel due to gravity
-kd = 0.95         # inherent joint velocity damping (friction/motor resistanc, match animation interval
 dt = 0.03         # animation timestep (s)
 dt_phys = 0.005   # timestep for integrators
 
