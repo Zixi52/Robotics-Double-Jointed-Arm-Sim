@@ -11,16 +11,17 @@ threshold = 0.05  # stop PID when end-effector error is below this
 m1 = 1.0          # mass of upper arm (kg)
 m2 = 0.75         # mass of forearm (kg)
 g  = 9.81         # accel due to gravity
-kd = 0.95         # inherent joint velocity damping (friction/motor resistance)
-dt = 0.03         # timestep (s), match animation interval
+kd = 0.95         # inherent joint velocity damping (friction/motor resistanc, match animation interval
+dt = 0.03         # animation timestep (s)
+dt_phys = 0.005   # timestep for integrators
 
 # PID gains: tune these to change arm behavior
 # Kp: stiffness; higher = faster response but more overshoot
 # Ki: integral; corrects persistent steady-state error (e.g. gravity sag)
 # Kd: derivative; dampens oscillation
-Kp = np.diag([200.0, 150.0])
-Ki = np.diag([20, 20])
-Kd = np.diag([20, 12])
+Kp = np.diag([180.0, 120.0])
+Ki = np.diag([8, 8])
+Kd = np.diag([45, 32])
 
 # State
 theta = np.array([np.pi / 4, np.pi / 4]) # [theta1, theta2]
@@ -28,6 +29,7 @@ theta_dot = np.array([0.0, 0.0])         # joint velocities
 integral_error = np.array([0.0, 0.0])    # accumulated error for I term
 theta_target = None                      # target joint angles (from IK)
 target = None                            # target end-effector pos (from click)
+theta_target_step = theta.copy()
 
 # Kinematics
 def forward_kinematics(theta):
@@ -38,68 +40,50 @@ def forward_kinematics(theta):
     end = elbow + L2 * np.array([np.cos(t1 + t2), np.sin(t1 + t2)])
     return base, elbow, end
 
-def jacobian(theta):
-    # 2x2 Jacobian matrix J where [dx, dy]^T = J @ [dtheta1, dtheta2]^T
 
-    # each column = how end-effector moves if I rotate that joint by a tiny amount
+def inertia_matrix(theta):
+    t2 = theta[1]
+
+    I1 = m1 * (L1**2) / 3
+    I2 = m2 * (L2**2) / 3
+
+    M11 = I1 + I2 + m2 * (L1**2 + 2 * L1 * (L2/2) * np.cos(t2))
+    M12 = I2 + m2 * L1 * (L2/2) * np.cos(t2)
+    M22 = I2
+
+    return np.array([[M11, M12], [M12, M22]])
+
+
+def coriolis_centrifugal(theta, theta_dot):
+    t2 = theta[1]
+    d1, d2 = theta_dot
+
+    h = -0.5 * m2 * L1 * (L2/2) * np.sin(t2)
+
+    return np.array([h * (2*d1*d2 + d2**2), h * (d1**2)])
+
+
+def gravity_vector(theta):
     t1, t2 = theta
-    s1  = np.sin(t1)
-    s12 = np.sin(t1 + t2)
-    c1  = np.cos(t1)
-    c12 = np.cos(t1 + t2)
 
-    J = np.array([
-        [-L1 * s1 - L2 * s12,  -L2 * s12],
-        [ L1 * c1 + L2 * c12,   L2 * c12]
-    ])
-    return J
+    g1 = (m1 * g * (L1/2) * np.cos(t1) +
+          m2 * g * (L1*np.cos(t1) + (L2/2)*np.cos(t1 + t2)))
 
-def gravity_torques(theta):
-    t1, t2 = theta
-    F_grav = np.array([0.0, -g])   # gravity always points down
+    g2 = m2 * g * (L2/2) * np.cos(t1 + t2)
 
-    # Link 1: center of mass is halfway along the upper arm
-    # Jacobian of the link-1 COM with respect to both joints
-    # joint 2 doesn't affect link 1's COM, so its column is zero
-    J1_com = np.array([
-        [-0.5 * L1 * np.sin(t1),  0.0],
-        [ 0.5 * L1 * np.cos(t1),  0.0]
-    ])
-    tau1 = J1_com.T @ (m1 * F_grav)
+    return np.array([g1, g2])
 
-    # Link 2: center of mass is halfway along the forearm
-    # Jacobian of the link-2 COM with respect to both joints
-    J2_com = np.array([
-        [-L1 * np.sin(t1) - 0.5 * L2 * np.sin(t1 + t2),  -0.5 * L2 * np.sin(t1 + t2)],
-        [ L1 * np.cos(t1) + 0.5 * L2 * np.cos(t1 + t2),   0.5 * L2 * np.cos(t1 + t2)]
-    ])
-    tau2 = J2_com.T @ (m2 * F_grav)
-
-    return tau1 + tau2   # total torque vector [tau_joint1, tau_joint2]
-
-# solve for joint angles using law of cosines, always using CW solution
-# fix to not always use CW solution, angle math
-def analytic_ik(target):
-    x, y = target
-    D = (x**2 + y**2 - L1**2 - L2**2) / (2 * L1 * L2)
-    D = np.clip(D, -1.0, 1.0)
-
-    t2 = np.arctan2(-np.sqrt(1 - D**2), D)
-    t1 = np.arctan2(y, x) - np.arctan2(L2 * np.sin(t2), L1 + L2 * np.cos(t2))
-
-    return np.array([t1, t2])
 
 def pid_step(theta, theta_dot, theta_target, integral_error):
     e = theta_target - theta    # proportional error
     e = np.arctan2(np.sin(e), np.cos(e)) # angle wrap [-pi, pi]
-    integral_error = integral_error + e * dt    # accumulate integral
+    integral_error = integral_error + e * dt_phys    # accumulate integral
     e_dot = -theta_dot    # derivative of error
 
     tau = Kp @ e + Ki @ integral_error + Kd @ e_dot
 
     return tau, integral_error
 
-# Drawing
 
 fig, ax = plt.subplots(figsize=(7, 7))
 ax.set_xlim(-(L1 + L2 + 1), L1 + L2 + 1)
@@ -126,15 +110,13 @@ line_fore,  = ax.plot([], [], color='#00ffcc', linewidth=4,
                       solid_capstyle='round', label='Forearm')
 
 # Joints
-dot_base,  = ax.plot([], [], 'o', color='white',   markersize=10, zorder=5)
-dot_elbow, = ax.plot([], [], 'o', color='#aaaaaa', markersize=8,  zorder=5)
-dot_end,   = ax.plot([], [], 'o', color='#ffdd00', markersize=9,  zorder=5)
+dot_base,  = ax.plot([], [], 'o', color='white', markersize=10)
+dot_elbow, = ax.plot([], [], 'o', color='#aaaaaa', markersize=8)
+dot_end,   = ax.plot([], [], 'o', color='#ffdd00', markersize=9)
 
 # Target marker
-dot_target, = ax.plot([], [], 'x', color='#ff4444',
-                      markersize=12, markeredgewidth=2, zorder=6)
+dot_target, = ax.plot([], [], 'x', color='#ff4444', markersize=12)
 
-# Info text
 info_text = ax.text(0.02, 0.97, '', transform=ax.transAxes,
                     color='#aaaaaa', fontsize=9, va='top', fontfamily='monospace')
 
@@ -153,63 +135,92 @@ def update_display(theta, tau_pid):
     else:
         dot_target.set_data([], [])
 
-    J = jacobian(theta)
-    det = np.linalg.det(J)
     err = np.linalg.norm(target - end) if target is not None else 0.0
 
     info_text.set_text(
-        f"θ₁ = {(np.degrees(theta[0]) % 360):6.1f}°\n"
-        f"θ₂ = {(np.degrees(theta[1]) % 360):6.1f}°\n"
-        f"det(J) = {det:.3f}\n"
+        f"θ1 = {np.degrees(theta[0]):6.1f}°\n"
+        f"θ2 = {np.degrees(theta[1]):6.1f}°\n"
         f"error = {err:.3f}\n"
-        f"τ_pid = [{tau_pid[0]:5.2f}, {tau_pid[1]:5.2f}]"
+        f"tau = [{tau_pid[0]:.2f}, {tau_pid[1]:.2f}]"
     )
 
-# Animation loop
 
 def animate(_frame):
-    global theta, theta_dot, theta_target, target, integral_error
+    global theta, theta_dot, theta_target, theta_target_step, target, integral_error
 
     tau_pid = np.array([0.0, 0.0])
 
-    # 1. Gravity pulls the arm down every frame
-    tau_grav = gravity_torques(theta)
-    theta_dot += tau_grav * dt
+    substeps = int(dt / dt_phys)
 
-    # 2. PID drives joints toward theta_target (if one is set)
-    if theta_target is not None:
-        _, _, end = forward_kinematics(theta)
-        if np.linalg.norm(target - end) < threshold:
-            integral_error = np.array([0.0, 0.0])   # reset integrator on arrival
-        tau_pid, integral_error = pid_step(theta, theta_dot, theta_target, integral_error)
-        theta_dot += tau_pid * dt
+    for _ in range(substeps):
 
-    # 3. Damping, models friction and motor resistance
-    theta_dot *= kd
+        if theta_target is not None:
+            _, _, end = forward_kinematics(theta)
 
-    # 4. Integrate velocity into position
-    theta += theta_dot * dt
+            dist = np.linalg.norm(target - end)
+
+            if np.linalg.norm(dist) < threshold:
+                integral_error = np.array([0.0, 0.0])
+
+            theta_target_step += 0.1 * (theta_target - theta_target_step)
+
+            tau_pid, integral_error = pid_step(
+                theta, theta_dot, theta_target_step, integral_error
+            )
+
+            gain = np.clip(dist / 0.08, 0.0, 1.0)
+            tau_pid *= gain
+
+        M = inertia_matrix(theta)
+        C = coriolis_centrifugal(theta, theta_dot)
+        G = gravity_vector(theta)
+
+        tau_damp = -10.0 * theta_dot
+
+        if theta_target is None:
+            tau = tau_damp
+        else:
+            tau = tau_pid + tau_damp + G
+            tau = np.clip(tau, -100, 100)
+
+        theta_ddot = np.linalg.solve(M, tau - C - G)
+
+        theta_ddot = np.clip(theta_ddot, -50, 50)
+
+        theta_dot += theta_ddot * dt_phys
+        theta_dot = np.clip(theta_dot, -15, 15)
+
+        theta += theta_dot * dt_phys
 
     update_display(theta, tau_pid)
     return line_upper, line_fore, dot_base, dot_elbow, dot_end, dot_target, info_text
 
-# Mouse click handler
 
 def on_click(event):
     global target, theta_target, integral_error
     if event.inaxes != ax:
         return
     clicked = np.array([event.xdata, event.ydata])
-    # Only set target if it's within the reachable workspace
-    # range goes beyond L1 + L2 and L1 - L2, look into this
-    valid_target = True if (np.linalg.norm(clicked) <= L1 + L2 + 0.05 and np.linalg.norm(clicked) >= L1 - L2 - 0.05) else False
-    if valid_target:
+
+    if L1 - L2 <= np.linalg.norm(clicked) <= L1 + L2:
         target = clicked
         theta_target = analytic_ik(target)      # solve for joint angles once on click
         integral_error = np.array([0.0, 0.0])   # reset integrator for new target
     else:
-        print("Target outside workspace - click between the two circles.")
-    print(np.linalg.norm(clicked))
+        print("Target outside workspace")
+
+
+def analytic_ik(target):
+    x, y = target
+
+    D = (x**2 + y**2 - L1**2 - L2**2) / (2 * L1 * L2)
+    D = np.clip(D, -1, 1)
+
+    t2 = np.arctan2(-np.sqrt(1 - D**2), D)
+    t1 = np.arctan2(y, x) - np.arctan2(L2*np.sin(t2), L1 + L2*np.cos(t2))
+
+    return np.array([t1, t2])
+
 
 fig.canvas.mpl_connect('button_press_event', on_click)
 
@@ -217,6 +228,5 @@ ani = animation.FuncAnimation(
     fig, animate, interval=30, blit=True, cache_frame_data=False
 )
 
-ax.legend(loc='lower right', facecolor='#1a1a1a', labelcolor='white', fontsize=8)
 plt.tight_layout()
 plt.show()
