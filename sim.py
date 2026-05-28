@@ -169,14 +169,14 @@ def animate(_frame):
         C = coriolis_centrifugal(theta, theta_dot)
         G = gravity_vector(theta)
 
-        tau_damp = -30.0 * theta_dot
+        tau_damp = 30.0 * theta_dot
 
         if theta_target is None:
-            tau = tau_damp
+            tau = np.zeros_like(tau_damp)
         else:
-            tau = tau_pid + tau_damp + G
+            tau = tau_pid + G
 
-        theta_ddot = np.linalg.solve(M, tau - C - G)
+        theta_ddot = np.linalg.solve(M, tau - C - G - tau_damp)
 
         theta_ddot = np.clip(theta_ddot, -300, 300)
 
